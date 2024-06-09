@@ -443,6 +443,8 @@ class TransactionStreamSpec extends FixtureAsyncWordSpec with BaseIOSpec with Op
       counterValue <- stream.getCounter
       orders       <- getO.stream(skunk.Void, 50).compile.toList
       transactions <- getT.stream(skunk.Void, 50).compile.toList
+      _ = println(s"Orders: $orders")
+      _ = println(s"Transactions: $transactions")
     } yield Result(counterValue, orders, transactions)
   }
 

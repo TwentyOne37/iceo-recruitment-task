@@ -40,7 +40,7 @@ final class TransactionStream[F[_]](
           state <- stateManager.getOrderState(updatedOrder, queries)
           transaction = TransactionRow(state = state, updated = updatedOrder)
           // parameters for order update
-          params = state.filled *: state.orderId *: EmptyTuple
+          params = updatedOrder.filled *: updatedOrder.orderId *: EmptyTuple
           // update order with params
           _ <- queries.updateOrder.execute(params)
           // insert the transaction
