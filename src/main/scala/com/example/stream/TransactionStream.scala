@@ -40,7 +40,7 @@ final class TransactionStream[F[_]](
           state <- stateManager.getOrderState(updatedOrder, queries)
           transaction = TransactionRow(state = state, updated = updatedOrder)
 
-          _ <- if (transaction.amount > 0) {
+          _ <- if (transaction.amount != 0) {
                  // parameters for order update
                  val params = updatedOrder.filled *: updatedOrder.orderId *: EmptyTuple
                  for {
