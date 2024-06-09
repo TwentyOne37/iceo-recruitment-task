@@ -41,18 +41,21 @@ final class TransactionStream[F[_]](
           transaction = TransactionRow(state = state, updated = updatedOrder)
 
           _ <- if (transaction.amount != 0) {
-                 // parameters for order update
-                 val params = updatedOrder.filled *: updatedOrder.orderId *: EmptyTuple
-                 for {
-                   // Update order with params
-                   _ <- queries.updateOrder.execute(params)
-                   // Insert the transaction
-                   _ <- queries.insertTransaction.execute(transaction)
-                   // Perform long running operation and handle errors
-                   _ <- performLongRunningOperation(transaction).value.void.handleErrorWith(th =>
-                          logger.error(th)(s"Got error when performing long running IO!")
-                        )
-                 } yield ()
+                 performLongRunningOperation(transaction).value.flatMap {
+                   case Right(_) =>
+                     // parameters for order update
+                     val params = updatedOrder.filled *: updatedOrder.orderId *: EmptyTuple
+                     for {
+                       // Update order with params
+                       _ <- queries.updateOrder.execute(params)
+                       // Insert the transaction
+                       _ <- queries.insertTransaction.execute(transaction)
+                     } yield ()
+
+                   case Left(th) =>
+                     // Log error and do not update or insert if long running IO fails
+                     logger.error(th)("Long running IO failed, no database operations performed.")
+                 }
                } else {
                  // Log that no transaction will be processed
                  logger.info(s"Skipping transaction for order ${updatedOrder.orderId} as no amount has been filled.")
