@@ -287,7 +287,8 @@ class TransactionStreamSpec extends FixtureAsyncWordSpec with BaseIOSpec with Op
             _           <- stream.publish(firstUpdate)
             _           <- IO.sleep(1.second)
             // long running IO should run for 5 seconds and be completed
-            _       <- streamFiber.cancel
+            _ <- streamFiber.cancel
+
             results <- getResults(stream, getO, getT)
           } yield results
         }

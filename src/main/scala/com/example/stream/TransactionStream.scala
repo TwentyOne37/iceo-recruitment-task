@@ -33,35 +33,30 @@ final class TransactionStream[F[_]](
   // Transactions always have positive amount
   // Order is executed if total == filled
   private def processUpdate(updatedOrder: OrderRow): F[Unit] = {
-    PreparedQueries(session)
-      .use { queries =>
-        for {
-          // Get current known order state
-          state <- stateManager.getOrderState(updatedOrder, queries)
-          transaction = TransactionRow(state = state, updated = updatedOrder)
+    PreparedQueries(session).use { queries =>
+      for {
+        state <- stateManager.getOrderState(updatedOrder, queries)
+        transaction = TransactionRow(state = state, updated = updatedOrder)
 
-          _ <- if (transaction.amount != 0) {
+        _ <- if (transaction.amount != 0) {
+               F.uncancelable { _ => // Ensure that once this block begins, it cannot be cancelled
                  performLongRunningOperation(transaction).value.flatMap {
                    case Right(_) =>
-                     // parameters for order update
                      val params = updatedOrder.filled *: updatedOrder.orderId *: EmptyTuple
                      for {
-                       // Update order with params
                        _ <- queries.updateOrder.execute(params)
-                       // Insert the transaction
                        _ <- queries.insertTransaction.execute(transaction)
                      } yield ()
 
                    case Left(th) =>
-                     // Log error and do not update or insert if long running IO fails
                      logger.error(th)("Long running IO failed, no database operations performed.")
                  }
-               } else {
-                 // Log that no transaction will be processed
-                 logger.info(s"Skipping transaction for order ${updatedOrder.orderId} as no amount has been filled.")
                }
-        } yield ()
-      }
+             } else {
+               logger.info(s"Skipping transaction for order ${updatedOrder.orderId} as no amount has been filled.")
+             }
+      } yield ()
+    }
   }
 
   // represents some long running IO that can fail
