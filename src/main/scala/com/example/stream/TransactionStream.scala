@@ -61,6 +61,15 @@ final class TransactionStream[F[_]](
     }
   }
 
+  private def drainQueue(queue: Queue[F, OrderRow]): F[Unit] = {
+    queue.tryTake.flatMap {
+      case Some(order) =>
+        processUpdate(order) >> drainQueue(queue)
+      case None =>
+        Async[F].unit // When no more items, complete the shutdown.
+    }
+  }
+
   // represents some long running IO that can fail
   private def performLongRunningOperation(transaction: TransactionRow): EitherT[F, Throwable, Unit] = {
     EitherT.liftF[F, Throwable, Unit](
@@ -101,18 +110,27 @@ object TransactionStream {
     operationTimer: FiniteDuration,
     session: Resource[F, Session[F]]
   ): Resource[F, TransactionStream[F]] = {
-    Resource.eval {
-      for {
-        counter      <- Ref.of(0)
-        queue        <- Queue.unbounded[F, OrderRow]
-        stateManager <- StateManager.apply
-      } yield new TransactionStream[F](
-        operationTimer,
-        queue,
-        session,
-        counter,
-        stateManager
-      )
-    }
+    for {
+      counter      <- Resource.eval(Ref.of(0))
+      stateManager <- Resource.eval(StateManager.apply[F])
+      queue <- Resource.make(Queue.unbounded[F, OrderRow]) { queue =>
+                 // Function to drain the queue on resource release
+                 val stream = new TransactionStream[F](
+                   operationTimer,
+                   queue,
+                   session,
+                   counter,
+                   stateManager
+                 )
+                 stream.drainQueue(queue)
+               }
+
+    } yield new TransactionStream[F](
+      operationTimer,
+      queue,
+      session,
+      counter,
+      stateManager
+    )
   }
 }

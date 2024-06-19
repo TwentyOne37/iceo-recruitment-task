@@ -2,6 +2,7 @@ package com.example.model
 
 import java.time.Instant
 import java.util.UUID
+import scala.annotation.tailrec
 
 case class TransactionRow(
   id: UUID,
@@ -13,10 +14,11 @@ case class TransactionRow(
 object TransactionRow {
 
   def apply(state: OrderRow, updated: OrderRow): TransactionRow = {
-    val amount = {
-      if (updated.filled == state.total) state.total - state.filled
+    val amount =
+      if (updated.filled == state.total)
+        state.total - state.filled
+      else if (state.filled > 0) updated.filled - state.filled
       else updated.filled
-    }
 
     TransactionRow(
       id = UUID.randomUUID(), // generate some id for our transaction
