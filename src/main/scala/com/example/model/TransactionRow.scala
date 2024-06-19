@@ -13,9 +13,10 @@ case class TransactionRow(
 object TransactionRow {
 
   def apply(state: OrderRow, updated: OrderRow): TransactionRow = {
-    val amount =
-      if (state.filled == 0) updated.filled
-      else state.total - updated.filled
+    val amount = {
+      if (updated.filled == state.total) state.total - state.filled
+      else updated.filled
+    }
 
     TransactionRow(
       id = UUID.randomUUID(), // generate some id for our transaction
