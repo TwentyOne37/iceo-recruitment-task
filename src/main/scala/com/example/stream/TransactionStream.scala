@@ -1,5 +1,6 @@
 package com.example.stream
 
+import cats.{Monad, MonadError}
 import cats.data.EitherT
 import cats.effect.{Ref, Resource}
 import cats.effect.kernel.Async
@@ -33,40 +34,55 @@ final class TransactionStream[F[_]](
   // Transactions always have positive amount
   // Order is executed if total == filled
   private def processUpdate(updatedOrder: OrderRow): F[Unit] = {
-    PreparedQueries(session)
-      .use { queries =>
-        for {
-          // Get current known order state
-          state <- stateManager.getOrderState(updatedOrder, queries)
-          transaction = TransactionRow(state = state, updated = updatedOrder)
-          // parameters for order update
-          params = updatedOrder.filled *: updatedOrder.orderId *: EmptyTuple
+    PreparedQueries(session).use { queries =>
+      for {
+        // Get the current known order state.
+        state <- stateManager.getOrderState(updatedOrder, queries)
+        transaction = TransactionRow(state = state, updated = updatedOrder)
 
-          // update order with params
-          _ <- queries.updateOrder.execute(params)
-          // insert the transaction
-          _ <- queries.insertTransaction.execute(transaction)
-          _ <- performLongRunningOperation(transaction).value.void.handleErrorWith(th =>
-                 logger.error(th)(s"Got error when performing long running IO!")
-               )
-        } yield ()
-      }
+        // First, perform the long-running operation and handle failure.
+        _ <- performLongRunningOperation(transaction).value.flatMap {
+               case Right(_) => Monad[F].unit // Continue if successful.
+               case Left(th) =>
+                 logger.error(th)("Got error when performing long running operation!")
+                 MonadError[F, Throwable].raiseError[Unit](new RuntimeException("Long running operation failed", th))
+             }
+
+        // Parameters for the order update.
+        params = updatedOrder.filled *: updatedOrder.orderId *: EmptyTuple
+
+        // Update order with params only if the previous step was successful.
+        _ <- queries.updateOrder.execute(params)
+
+        // Insert the transaction only if all previous steps were successful.
+        _ <- if (updatedOrder.filled != 0) queries.insertTransaction.execute(transaction) else F.unit
+
+      } yield ()
+    }
   }
 
   // represents some long running IO that can fail
   private def performLongRunningOperation(transaction: TransactionRow): EitherT[F, Throwable, Unit] = {
     EitherT.liftF[F, Throwable, Unit](
-      F.sleep(operationTimer) *>
+      F.sleep(operationTimer) *> // Perform an asynchronous sleep to simulate long-running operation
         stateManager.getSwitch.flatMap {
           case false =>
-            transactionCounter
-              .updateAndGet(_ + 1)
-              .flatMap(count =>
-                logger.info(
-                  s"Updated counter to $count by transaction with amount ${transaction.amount} for order ${transaction.orderId}!"
+            if (transaction.amount > 0) {
+              // Update and log only if amount is greater than zero
+              transactionCounter
+                .updateAndGet(_ + 1)
+                .flatMap(count =>
+                  logger.info(
+                    s"Updated counter to $count by transaction with amount ${transaction.amount} for order ${transaction.orderId}!"
+                  )
                 )
-              )
-          case true => F.raiseError(throw new Exception("Long running IO failed!"))
+            } else {
+              // Perform no operation, just continue with the existing context
+              F.unit
+            }
+          case true =>
+            // Raise an error if the switch is on (true), indicating a failure condition
+            F.raiseError(new Exception("Long running IO failed!"))
         }
     )
   }
