@@ -2,7 +2,6 @@ package com.example.model
 
 import java.time.Instant
 import java.util.UUID
-import scala.annotation.tailrec
 
 case class TransactionRow(
   id: UUID,

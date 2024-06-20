@@ -10,8 +10,7 @@ final case class PreparedQueries[F[_]](
   getOrder: PreparedQuery[F, String, OrderRow],
   getAllOrders: PreparedQuery[F, Void, OrderRow],
   updateOrder: PreparedCommand[F, BigDecimal *: String *: EmptyTuple],
-  insertTransaction: PreparedCommand[F, TransactionRow],
-  getTransaction: PreparedQuery[F, String, TransactionRow]
+  insertTransaction: PreparedCommand[F, TransactionRow]
 )
 
 object PreparedQueries {
@@ -22,7 +21,6 @@ object PreparedQueries {
         xa          <- session.transaction
         insertO     <- session.prepareR(Queries.insertOrder)
         insertT     <- session.prepareR(Queries.insertTransaction)
-        getT        <- session.prepareR(Queries.getTransaction)
         getOrder    <- session.prepareR(Queries.getOrder)
         getOrders   <- session.prepareR(Queries.getAllOrders)
         updateOrder <- session.prepareR(Queries.updateOrder)
@@ -30,7 +28,6 @@ object PreparedQueries {
         xa = xa,
         insertOrder = insertO,
         insertTransaction = insertT,
-        getTransaction = getT,
         getOrder = getOrder,
         getAllOrders = getOrders,
         updateOrder = updateOrder

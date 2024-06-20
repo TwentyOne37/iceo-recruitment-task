@@ -27,6 +27,7 @@ final class TransactionStream[F[_]](
     Stream
       .fromQueueUnterminated(orders)
       .evalMap(processUpdate)
+
   }
 
   // Application should shut down on error,
@@ -34,32 +35,33 @@ final class TransactionStream[F[_]](
   // Transactions always have positive amount
   // Order is executed if total == filled
   private def processUpdate(updatedOrder: OrderRow): F[Unit] = {
-    PreparedQueries(session).use { queries =>
-      for {
-        // Get the current known order state.
-        state <- stateManager.getOrderState(updatedOrder, queries)
-        transaction = TransactionRow(state = state, updated = updatedOrder)
-        transactionExists <- stateManager.transactionExists(transaction, queries)
-        _                 <- logger.info(s"transactionExists: $transactionExists")
+    F.uncancelable { _ =>
+      PreparedQueries(session).use { queries =>
+        for {
+          // Get the current known order state.
+          state <- stateManager.getOrderState(updatedOrder, queries)
+          transaction = TransactionRow(state = state, updated = updatedOrder)
+          transactionExists <- stateManager.transactionExists(transaction, queries)
 
-        // First, perform the long-running operation and handle failure.
-        _ <- performLongRunningOperation(transaction, transactionExists).value.flatMap {
-               case Right(_) => Monad[F].unit // Continue if successful.
-               case Left(th) =>
-                 logger.error(th)("Got error when performing long running operation!")
-                 MonadError[F, Throwable].raiseError[Unit](new RuntimeException("Long running operation failed", th))
-             }
+          // First, perform the long-running operation and handle failure.
+          _ <- performLongRunningOperation(transaction, transactionExists).value.flatMap {
+                 case Right(_) => Monad[F].unit // Continue if successful.
+                 case Left(th) =>
+                   logger.error(th)("Got error when performing long running operation!")
+                   MonadError[F, Throwable].raiseError[Unit](new RuntimeException("Long running operation failed", th))
+               }
 
-        // Parameters for the order update.
-        params = updatedOrder.filled *: updatedOrder.orderId *: EmptyTuple
+          // Parameters for the order update.
+          params = updatedOrder.filled *: updatedOrder.orderId *: EmptyTuple
 
-        // Update order with params only if the previous step was successful.
-        _ <- queries.updateOrder.execute(params)
+          // Update order with params only if the previous step was successful.
+          _ <- queries.updateOrder.execute(params)
 
-        // Insert the transaction only if all previous steps were successful.
-        _ <- if (updatedOrder.filled != 0) queries.insertTransaction.execute(transaction) else F.unit
+          // Insert the transaction only if all previous steps were successful.
+          _ <- if (updatedOrder.filled != 0) queries.insertTransaction.execute(transaction) else F.unit
 
-      } yield ()
+        } yield ()
+      }
     }
   }
 
