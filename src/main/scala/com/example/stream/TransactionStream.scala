@@ -39,9 +39,11 @@ final class TransactionStream[F[_]](
         // Get the current known order state.
         state <- stateManager.getOrderState(updatedOrder, queries)
         transaction = TransactionRow(state = state, updated = updatedOrder)
+        transactionExists <- stateManager.transactionExists(transaction, queries)
+        _                 <- logger.info(s"transactionExists: $transactionExists")
 
         // First, perform the long-running operation and handle failure.
-        _ <- performLongRunningOperation(transaction).value.flatMap {
+        _ <- performLongRunningOperation(transaction, transactionExists).value.flatMap {
                case Right(_) => Monad[F].unit // Continue if successful.
                case Left(th) =>
                  logger.error(th)("Got error when performing long running operation!")
@@ -71,24 +73,23 @@ final class TransactionStream[F[_]](
   }
 
   // represents some long running IO that can fail
-  private def performLongRunningOperation(transaction: TransactionRow): EitherT[F, Throwable, Unit] = {
+  private def performLongRunningOperation(
+    transaction: TransactionRow,
+    transactionExists: Boolean
+  ): EitherT[F, Throwable, Unit] = {
     EitherT.liftF[F, Throwable, Unit](
-      F.sleep(operationTimer) *> // Perform an asynchronous sleep to simulate long-running operation
+      F.sleep(operationTimer) *> // Simulate long-running operation
         stateManager.getSwitch.flatMap {
           case false =>
-            if (transaction.amount > 0) {
-              // Update and log only if amount is greater than zero
+            if (transaction.amount > 0 || transactionExists) {
               transactionCounter
                 .updateAndGet(_ + 1)
                 .flatMap(count =>
                   logger.info(
                     s"Updated counter to $count by transaction with amount ${transaction.amount} for order ${transaction.orderId}!"
                   )
-                )
-            } else {
-              // Perform no operation, just continue with the existing context
-              F.unit
-            }
+                ) *> F.unit
+            } else F.unit
           case true =>
             // Raise an error if the switch is on (true), indicating a failure condition
             F.raiseError(new Exception("Long running IO failed!"))

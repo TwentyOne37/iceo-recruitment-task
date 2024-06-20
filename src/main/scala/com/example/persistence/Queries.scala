@@ -26,6 +26,17 @@ object Queries {
        """.command
   }
 
+  val getTransaction: Query[String, TransactionRow] = {
+    sql"""
+       SELECT * FROM transactions
+       WHERE limit_order_id = $text
+     """
+      .query(uuid ~ text ~ numeric ~ instantCodec)
+      .map { case id ~ orderId ~ amount ~ createdAt =>
+        TransactionRow(id, orderId, amount, createdAt)
+      }
+  }
+
   val getAllTransactions: Query[Void, TransactionRow] = {
     sql"""
          SELECT * FROM transactions

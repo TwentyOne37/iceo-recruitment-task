@@ -1,7 +1,7 @@
 package com.example.stream
 
 import cats.effect.Async
-import com.example.model.OrderRow
+import com.example.model.{OrderRow, TransactionRow}
 import com.example.persistence.PreparedQueries
 import skunk.PreparedCommand
 import cats.syntax.all._
@@ -17,6 +17,13 @@ final class StateManager[F[_]: Async](ioSwitch: SignallingRef[F, Boolean]) {
 
   def add(row: OrderRow, insert: PreparedCommand[F, OrderRow]): F[Unit] = {
     insert.execute(row).void
+  }
+
+  def transactionExists(transaction: TransactionRow, queries: PreparedQueries[F]): F[Boolean] = {
+    queries.getOrder.option(transaction.orderId).map {
+      case Some(existingTransaction) => existingTransaction.filled != transaction.amount
+      case None                      => true
+    }
   }
 
   def getSwitch: F[Boolean]              = ioSwitch.get
