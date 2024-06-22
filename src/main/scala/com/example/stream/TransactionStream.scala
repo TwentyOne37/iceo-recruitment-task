@@ -20,13 +20,14 @@ final class TransactionStream[F[_]](
   orders: Queue[F, OrderRow],
   session: Resource[F, Session[F]],
   transactionCounter: Ref[F, Int], // updated if long IO succeeds
-  stateManager: StateManager[F]    // utility for state management
+  stateManager: StateManager[F],   // utility for state management
+  maxConcurrency: Int
 )(implicit F: Async[F], logger: Logger[F]) {
 
   def stream: Stream[F, Unit] = {
     Stream
       .fromQueueUnterminated(orders)
-      .evalMap(processUpdate)
+      .parEvalMap(maxConcurrency)(processUpdate)
 
   }
 
@@ -38,31 +39,55 @@ final class TransactionStream[F[_]](
     F.uncancelable { _ =>
       PreparedQueries(session).use { queries =>
         for {
-          // Get the current known order state.
-          state <- stateManager.getOrderState(updatedOrder, queries)
-          transaction = TransactionRow(state = state, updated = updatedOrder)
-          transactionExists <- stateManager.transactionExists(transaction, queries)
-
-          // First, perform the long-running operation and handle failure.
-          _ <- performLongRunningOperation(transaction, transactionExists).value.flatMap {
-                 case Right(_) => Monad[F].unit // Continue if successful.
-                 case Left(th) =>
-                   logger.error(th)("Got error when performing long running operation!")
-                   MonadError[F, Throwable].raiseError[Unit](new RuntimeException("Long running operation failed", th))
-               }
-
-          // Parameters for the order update.
-          params = updatedOrder.filled *: updatedOrder.orderId *: EmptyTuple
-
-          // Update order with params only if the previous step was successful.
-          _ <- queries.updateOrder.execute(params)
-
-          // Insert the transaction only if all previous steps were successful.
-          _ <- if (updatedOrder.filled != 0) queries.insertTransaction.execute(transaction) else F.unit
-
+          maybeOrderState <- stateManager.getOrderState(updatedOrder.orderId)
+          _ <- maybeOrderState.fold(logger.info("Order not found") *> F.unit)(orderState =>
+                 processTransaction(orderState, updatedOrder, queries)
+               )
         } yield ()
       }
     }
+  }
+
+  private def processTransaction(
+    orderState: OrderRow,
+    updatedOrder: OrderRow,
+    queries: PreparedQueries[F]
+  ): F[Unit] = {
+    val transaction = TransactionRow(state = orderState, updated = updatedOrder)
+    for {
+      transactionExists <- stateManager.transactionExists(transaction.id)
+      _ <- performLongRunningOperation(transaction, transactionExists).value.flatMap(
+             handleOperationOutcome(_, queries, updatedOrder, transaction)
+           )
+    } yield ()
+  }
+
+  private def handleOperationOutcome(
+    operationOutcome: Either[Throwable, Unit],
+    queries: PreparedQueries[F],
+    updatedOrder: OrderRow,
+    transaction: TransactionRow
+  ): F[Unit] = {
+    operationOutcome match {
+      case Right(_) => updateDatabase(queries, updatedOrder, transaction)
+      case Left(th) =>
+        logger.error(th)("Got error when performing long running operation!")
+        MonadError[F, Throwable].raiseError[Unit](new RuntimeException("Long running operation failed", th))
+    }
+  }
+
+  // todo: add logic to execute if total == filled
+  private def updateDatabase(
+    queries: PreparedQueries[F],
+    updatedOrder: OrderRow,
+    transaction: TransactionRow
+  ): F[Unit] = {
+    val params = updatedOrder.filled *: updatedOrder.orderId *: EmptyTuple
+    for {
+      _ <- queries.updateOrder.execute(params)
+      _ <- logger.info(s"updated order with: $params")
+      _ <- if (updatedOrder.filled != 0) queries.insertTransaction.execute(transaction) else F.unit
+    } yield ()
   }
 
   private def drainQueue(queue: Queue[F, OrderRow]): F[Unit] = {
@@ -103,7 +128,7 @@ final class TransactionStream[F[_]](
   def publish(update: OrderRow): F[Unit]                                          = orders.offer(update)
   def getCounter: F[Int]                                                          = transactionCounter.get
   def setSwitch(value: Boolean): F[Unit]                                          = stateManager.setSwitch(value)
-  def addNewOrder(order: OrderRow, insert: PreparedCommand[F, OrderRow]): F[Unit] = stateManager.add(order, insert)
+  def addNewOrder(order: OrderRow, insert: PreparedCommand[F, OrderRow]): F[Unit] = stateManager.addNewOrderState(order)
   // helper methods for testing
 }
 
@@ -123,7 +148,8 @@ object TransactionStream {
                    queue,
                    session,
                    counter,
-                   stateManager
+                   stateManager,
+                   2
                  )
                  stream.drainQueue(queue)
                }
@@ -133,7 +159,8 @@ object TransactionStream {
       queue,
       session,
       counter,
-      stateManager
+      stateManager,
+      2
     )
   }
 }
