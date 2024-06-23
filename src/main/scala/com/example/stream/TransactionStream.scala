@@ -40,7 +40,7 @@ final class TransactionStream[F[_]](
       PreparedQueries(session).use { queries =>
         for {
           maybeOrderState <- stateManager.getOrderState(updatedOrder.orderId)
-          _ <- maybeOrderState.fold(logger.info("Order not found") *> F.unit)(orderState =>
+          _ <- maybeOrderState.fold(logger.info(s"Order ${updatedOrder.orderId} not found.") *> F.unit)(orderState =>
                  processTransaction(orderState, updatedOrder, queries)
                )
         } yield ()
@@ -55,48 +55,13 @@ final class TransactionStream[F[_]](
   ): F[Unit] = {
     val transaction = TransactionRow(state = orderState, updated = updatedOrder)
     for {
+      _                 <- logger.info(s"Found orderState: $orderState")
       transactionExists <- stateManager.transactionExists(transaction.id)
+      _                 <- logger.info(s"Transaction: $transaction exists: $transactionExists")
       _ <- performLongRunningOperation(transaction, transactionExists).value.flatMap(
              handleOperationOutcome(_, queries, updatedOrder, transaction)
            )
     } yield ()
-  }
-
-  private def handleOperationOutcome(
-    operationOutcome: Either[Throwable, Unit],
-    queries: PreparedQueries[F],
-    updatedOrder: OrderRow,
-    transaction: TransactionRow
-  ): F[Unit] = {
-    operationOutcome match {
-      case Right(_) => updateDatabase(queries, updatedOrder, transaction)
-      case Left(th) =>
-        logger.error(th)("Got error when performing long running operation!")
-        MonadError[F, Throwable].raiseError[Unit](new RuntimeException("Long running operation failed", th))
-    }
-  }
-
-  // todo: add logic to execute if total == filled
-  private def updateDatabase(
-    queries: PreparedQueries[F],
-    updatedOrder: OrderRow,
-    transaction: TransactionRow
-  ): F[Unit] = {
-    val params = updatedOrder.filled *: updatedOrder.orderId *: EmptyTuple
-    for {
-      _ <- queries.updateOrder.execute(params)
-      _ <- logger.info(s"updated order with: $params")
-      _ <- if (updatedOrder.filled != 0) queries.insertTransaction.execute(transaction) else F.unit
-    } yield ()
-  }
-
-  private def drainQueue(queue: Queue[F, OrderRow]): F[Unit] = {
-    queue.tryTake.flatMap {
-      case Some(order) =>
-        processUpdate(order) >> drainQueue(queue)
-      case None =>
-        Async[F].unit // When no more items, complete the shutdown.
-    }
   }
 
   // represents some long running IO that can fail
@@ -105,7 +70,8 @@ final class TransactionStream[F[_]](
     transactionExists: Boolean
   ): EitherT[F, Throwable, Unit] = {
     EitherT.liftF[F, Throwable, Unit](
-      F.sleep(operationTimer) *> // Simulate long-running operation
+      logger.info("Performing long IO...") *>
+        F.sleep(operationTimer) *> // Simulate long-running operation
         stateManager.getSwitch.flatMap {
           case false =>
             if (transaction.amount > 0 || transactionExists) {
@@ -122,6 +88,57 @@ final class TransactionStream[F[_]](
             F.raiseError(new Exception("Long running IO failed!"))
         }
     )
+  }
+
+  private def handleOperationOutcome(
+    operationOutcome: Either[Throwable, Unit],
+    queries: PreparedQueries[F],
+    updatedOrder: OrderRow,
+    transaction: TransactionRow
+  ): F[Unit] = {
+    operationOutcome match {
+      case Right(_) if updatedOrder.filled == updatedOrder.total =>
+        for {
+          _                 <- logger.info("Order filled")
+          transactionsState <- stateManager.getTransactions(updatedOrder.orderId)
+          transactions = transaction :: transactionsState
+          _ <- insertRecords(queries, updatedOrder, transactions)
+        } yield ()
+
+      case Right(_) =>
+        logger.info("Order still in progress")
+        stateManager.addNewTransaction(transaction)
+        stateManager.updateOrderState(updatedOrder)
+      case Left(th) =>
+        logger.error(th)("Got error when performing long running operation!")
+        MonadError[F, Throwable].raiseError[Unit](new RuntimeException("Long running operation failed", th))
+    }
+  }
+
+  private def insertRecords(
+    queries: PreparedQueries[F],
+    updatedOrder: OrderRow,
+    transactions: List[TransactionRow]
+  ): F[Unit] = {
+    val params = updatedOrder.filled *: updatedOrder.orderId *: EmptyTuple
+    for {
+      _ <- queries.insertOrder.execute(updatedOrder).void
+      _ <- logger.info(s"Transactions: $transactions")
+      _ <- transactions.traverse_(transaction => {
+             logger.info(s"inserting transaction: $transaction") *>
+               queries.insertTransaction.execute(transaction).void
+           })
+      // clean state
+    } yield ()
+  }
+
+  private def drainQueue(queue: Queue[F, OrderRow]): F[Unit] = {
+    queue.tryTake.flatMap {
+      case Some(order) =>
+        processUpdate(order) >> drainQueue(queue)
+      case None =>
+        Async[F].unit // When no more items, complete the shutdown.
+    }
   }
 
   // helper methods for testing

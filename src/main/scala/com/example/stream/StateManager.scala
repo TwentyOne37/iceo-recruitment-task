@@ -29,6 +29,9 @@ final class StateManager[F[_]: Async](
       case None    => Async[F].unit // Do nothing if there is no such order
     }
 
+  def getTransactions(orderId: String): F[List[TransactionRow]] =
+    transactions.get.map(_.values.toList.filter(_.orderId == orderId))
+
   def addNewTransaction(transaction: TransactionRow): F[Unit] = {
     transactionExists(transaction.id).map {
       case false =>
