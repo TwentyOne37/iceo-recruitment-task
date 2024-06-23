@@ -107,8 +107,8 @@ final class TransactionStream[F[_]](
 
       case Right(_) =>
         logger.info("Order still in progress")
-        stateManager.addNewTransaction(transaction)
         stateManager.updateOrderState(updatedOrder)
+        stateManager.addNewTransaction(transaction)
       case Left(th) =>
         logger.error(th)("Got error when performing long running operation!")
         MonadError[F, Throwable].raiseError[Unit](new RuntimeException("Long running operation failed", th))
@@ -122,11 +122,10 @@ final class TransactionStream[F[_]](
   ): F[Unit] = {
     val params = updatedOrder.filled *: updatedOrder.orderId *: EmptyTuple
     for {
-      _ <- queries.insertOrder.execute(updatedOrder).void
-      _ <- logger.info(s"Transactions: $transactions")
+      _ <- queries.updateOrder.execute(params)
+      _ <- logger.info(s"Updated order: $updatedOrder")
       _ <- transactions.traverse_(transaction => {
-             logger.info(s"inserting transaction: $transaction") *>
-               queries.insertTransaction.execute(transaction).void
+             queries.insertTransaction.execute(transaction)
            })
       // clean state
     } yield ()
@@ -142,10 +141,11 @@ final class TransactionStream[F[_]](
   }
 
   // helper methods for testing
-  def publish(update: OrderRow): F[Unit]                                          = orders.offer(update)
-  def getCounter: F[Int]                                                          = transactionCounter.get
-  def setSwitch(value: Boolean): F[Unit]                                          = stateManager.setSwitch(value)
-  def addNewOrder(order: OrderRow, insert: PreparedCommand[F, OrderRow]): F[Unit] = stateManager.addNewOrderState(order)
+  def publish(update: OrderRow): F[Unit] = orders.offer(update)
+  def getCounter: F[Int]                 = transactionCounter.get
+  def setSwitch(value: Boolean): F[Unit] = stateManager.setSwitch(value)
+  def addNewOrder(order: OrderRow, insert: PreparedCommand[F, OrderRow]): F[Unit] =
+    stateManager.addNewOrderState(order, insert)
   // helper methods for testing
 }
 

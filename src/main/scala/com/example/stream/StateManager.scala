@@ -20,8 +20,10 @@ final class StateManager[F[_]: Async](
   def getOrderState(orderId: String): F[Option[OrderRow]] =
     orders.get.map(_.get(orderId))
 
-  def addNewOrderState(order: OrderRow): F[Unit] =
-    orders.update(_ + (order.orderId -> order))
+  def addNewOrderState(order: OrderRow, insert: PreparedCommand[F, OrderRow]): F[Unit] = {
+    insert.execute(order).void *>
+      orders.update(_ + (order.orderId -> order))
+  }
 
   def updateOrderState(order: OrderRow): F[Unit] =
     getOrderState(order.orderId).map {
