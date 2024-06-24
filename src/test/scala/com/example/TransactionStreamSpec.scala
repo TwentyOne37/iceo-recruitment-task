@@ -162,8 +162,6 @@ class TransactionStreamSpec extends FixtureAsyncWordSpec with BaseIOSpec with Op
           val updated = orders.find(_.orderId == order.orderId).value
           val txn     = transactions.filter(_.orderId == order.orderId)
 
-          txn.foreach(println(_))
-
           counter shouldBe 2
           updated.filled shouldBe 0.8
           txn.size shouldBe 2

@@ -4,7 +4,7 @@ import cats.{Monad, MonadError}
 import cats.data.EitherT
 import cats.effect.{Ref, Resource}
 import cats.effect.kernel.Async
-import cats.effect.std.Queue
+import cats.effect.std.{Queue, Semaphore}
 import fs2.Stream
 import org.typelevel.log4cats.Logger
 import cats.syntax.all._
@@ -27,7 +27,8 @@ final class TransactionStream[F[_]](
   def stream: Stream[F, Unit] = {
     Stream
       .fromQueueUnterminated(orders)
-      .evalMap(processUpdate)
+      .evalMap(order => processUpdate(order))
+      .parEvalMap(maxConcurrency)(_ => F.unit)
   }
 
   // Application should shut down on error,
@@ -142,6 +143,7 @@ object TransactionStream {
     for {
       counter      <- Resource.eval(Ref.of(0))
       stateManager <- Resource.eval(StateManager.apply[F])
+      maxConcurrency = 3
       queue <- Resource.make(Queue.unbounded[F, OrderRow]) { queue =>
                  // Function to drain the queue on resource release
                  val stream = new TransactionStream[F](
@@ -150,7 +152,7 @@ object TransactionStream {
                    session,
                    counter,
                    stateManager,
-                   2
+                   maxConcurrency
                  )
                  stream.drainQueue(queue)
                }
@@ -161,7 +163,7 @@ object TransactionStream {
       session,
       counter,
       stateManager,
-      2
+      maxConcurrency
     )
   }
 }
