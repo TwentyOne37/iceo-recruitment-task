@@ -12,7 +12,7 @@ import com.example.model.{OrderRow, TransactionRow}
 import com.example.persistence.PreparedQueries
 import skunk._
 
-import scala.concurrent.duration.FiniteDuration
+import scala.concurrent.duration.{DurationInt, FiniteDuration}
 
 // All SQL queries inside the Queries object are correct and should not be changed
 final class TransactionStream[F[_]](
@@ -40,15 +40,33 @@ final class TransactionStream[F[_]](
       PreparedQueries(session).use { queries =>
         for {
           maybeOrderState <- stateManager.getOrderState(updatedOrder.orderId, queries)
-          _ <- maybeOrderState.fold(
-                 logger.info(s"Order ${updatedOrder.orderId} not found.") *> F.unit
-               )(orderState =>
-                 if (shouldProcessUpdate(orderState, updatedOrder)) {
-                   processTransaction(orderState, updatedOrder, queries)
-                 } else {
-                   logger.info(s"No processing needed for order ${updatedOrder.orderId}.") *> F.unit
-                 }
-               )
+          _ <-
+            maybeOrderState.fold(
+              // Order not found initially, log and wait to retry
+              for {
+                _ <- logger.info(s"Order ${updatedOrder.orderId} not found. Retrying after 5 seconds...")
+                _ <- F.sleep(5.seconds) // Wait for 5 seconds before retrying
+                retriedOrderState <- stateManager.getOrderState(updatedOrder.orderId, queries)
+                _ <- retriedOrderState.fold(
+                       // Log error if order still not found after retry
+                       logger.error(s"Order ${updatedOrder.orderId} still not found after retry.") *> F.unit
+                     )(orderState =>
+                       // Process the order if found after retry
+                       if (shouldProcessUpdate(orderState, updatedOrder)) {
+                         processTransaction(orderState, updatedOrder, queries)
+                       } else {
+                         logger.info(s"No processing needed for order ${updatedOrder.orderId} after retry.") *> F.unit
+                       }
+                     )
+              } yield ()
+            )(orderState =>
+              // Process the order if found initially
+              if (shouldProcessUpdate(orderState, updatedOrder)) {
+                processTransaction(orderState, updatedOrder, queries)
+              } else {
+                logger.info(s"No processing needed for order ${updatedOrder.orderId}.") *> F.unit
+              }
+            )
         } yield ()
       }
     }
@@ -106,8 +124,10 @@ final class TransactionStream[F[_]](
     transaction: TransactionRow
   ): F[Unit] = {
     operationOutcome match {
-      case Right(_) if transaction.amount > 0 =>
-        insertRecords(queries, updatedOrder, transaction)
+      case Right(_) =>
+        if (transaction.amount > 0)
+          insertRecords(queries, updatedOrder, transaction)
+        else F.unit
 
       case Left(th) =>
         logger.error(th)("Got error when performing long running operation!")
