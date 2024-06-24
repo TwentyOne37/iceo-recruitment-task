@@ -1,10 +1,10 @@
 package com.example.stream
 
-import cats.{Monad, MonadError}
+import cats.MonadError
 import cats.data.EitherT
 import cats.effect.{Ref, Resource}
 import cats.effect.kernel.Async
-import cats.effect.std.{Queue, Semaphore}
+import cats.effect.std.Queue
 import fs2.Stream
 import org.typelevel.log4cats.Logger
 import cats.syntax.all._
@@ -40,12 +40,22 @@ final class TransactionStream[F[_]](
       PreparedQueries(session).use { queries =>
         for {
           maybeOrderState <- stateManager.getOrderState(updatedOrder.orderId, queries)
-          _ <- maybeOrderState.fold(logger.info(s"Order ${updatedOrder.orderId} not found.") *> F.unit)(orderState =>
-                 processTransaction(orderState, updatedOrder, queries)
+          _ <- maybeOrderState.fold(
+                 logger.info(s"Order ${updatedOrder.orderId} not found.") *> F.unit
+               )(orderState =>
+                 if (shouldProcessUpdate(orderState, updatedOrder)) {
+                   processTransaction(orderState, updatedOrder, queries)
+                 } else {
+                   logger.info(s"No processing needed for order ${updatedOrder.orderId}.") *> F.unit
+                 }
                )
         } yield ()
       }
     }
+  }
+
+  private def shouldProcessUpdate(orderState: OrderRow, updatedOrder: OrderRow): Boolean = {
+    updatedOrder.filled <= orderState.total
   }
 
   private def processTransaction(
@@ -54,8 +64,10 @@ final class TransactionStream[F[_]](
     queries: PreparedQueries[F]
   ): F[Unit] = {
     val transaction = TransactionRow(state = orderState, updated = updatedOrder)
+    val params      = updatedOrder.orderId *: updatedOrder.filled *: EmptyTuple
+
     for {
-      transactionExists <- stateManager.transactionExists(updatedOrder.orderId, queries)
+      transactionExists <- stateManager.transactionExists(params, queries)
       _ <- performLongRunningOperation(transaction, transactionExists).value.flatMap(
              handleOperationOutcome(_, queries, updatedOrder, transaction)
            )

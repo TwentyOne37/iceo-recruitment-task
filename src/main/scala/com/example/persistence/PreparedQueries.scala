@@ -8,7 +8,7 @@ final case class PreparedQueries[F[_]](
   xa: Transaction[F],
   insertOrder: PreparedCommand[F, OrderRow],
   getOrder: PreparedQuery[F, String, OrderRow],
-  checkTransactionExistence: PreparedQuery[F, String, Boolean],
+  checkTransactionExistence: PreparedQuery[F, String *: BigDecimal *: EmptyTuple, Boolean],
   getAllOrders: PreparedQuery[F, Void, OrderRow],
   updateOrder: PreparedCommand[F, BigDecimal *: String *: EmptyTuple],
   insertTransaction: PreparedCommand[F, TransactionRow]

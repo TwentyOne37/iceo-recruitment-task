@@ -1,13 +1,12 @@
 package com.example.stream
 
-import cats.effect.{Async, Ref}
-import com.example.model.{OrderRow, TransactionRow}
+import cats.effect.Async
+import com.example.model.OrderRow
 import com.example.persistence.PreparedQueries
-import skunk.PreparedCommand
+import skunk.{*:, PreparedCommand}
 import cats.syntax.all._
 import fs2.concurrent.SignallingRef
-
-import java.util.UUID
+import scodec.compat.EmptyTuple
 
 //Utility for managing placed order state
 //This can be used by other components, for example a stream that performs order placement will use add method
@@ -21,18 +20,8 @@ final class StateManager[F[_]: Async](ioSwitch: SignallingRef[F, Boolean]) {
     insert.execute(order).void
   }
 
-  def updateOrderState(
-    order: OrderRow,
-    queries: PreparedQueries[F],
-    update: PreparedCommand[F, OrderRow]
-  ): F[Unit] =
-    getOrderState(order.orderId, queries).map {
-      case Some(_) => update.execute(order)
-      case None    => Async[F].unit
-    }
-
-  def transactionExists(orderId: String, queries: PreparedQueries[F]): F[Boolean] =
-    queries.checkTransactionExistence.unique(orderId)
+  def transactionExists(params: String *: BigDecimal *: EmptyTuple, queries: PreparedQueries[F]): F[Boolean] =
+    queries.checkTransactionExistence.unique(params)
 
   def getSwitch: F[Boolean]              = ioSwitch.get
   def setSwitch(value: Boolean): F[Unit] = ioSwitch.set(value)
