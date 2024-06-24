@@ -27,19 +27,18 @@ final class TransactionStream[F[_]](
   def stream: Stream[F, Unit] = {
     Stream
       .fromQueueUnterminated(orders)
-      .parEvalMap(maxConcurrency)(processUpdate)
-
+      .evalMap(processUpdate)
   }
 
   // Application should shut down on error,
   // If performLongRunningOperation fails, we don't want to insert/update the records
   // Transactions always have positive amount
-  // Order is executed if total == filled
+  // Order is executed if total == filled <- ngl, it's a tricky comment
   private def processUpdate(updatedOrder: OrderRow): F[Unit] = {
     F.uncancelable { _ =>
       PreparedQueries(session).use { queries =>
         for {
-          maybeOrderState <- stateManager.getOrderState(updatedOrder.orderId)
+          maybeOrderState <- stateManager.getOrderState(updatedOrder.orderId, queries)
           _ <- maybeOrderState.fold(logger.info(s"Order ${updatedOrder.orderId} not found.") *> F.unit)(orderState =>
                  processTransaction(orderState, updatedOrder, queries)
                )
@@ -55,9 +54,8 @@ final class TransactionStream[F[_]](
   ): F[Unit] = {
     val transaction = TransactionRow(state = orderState, updated = updatedOrder)
     for {
-      _                 <- logger.info(s"Found orderState: $orderState")
-      transactionExists <- stateManager.transactionExists(transaction.id)
-      _                 <- logger.info(s"Transaction: $transaction exists: $transactionExists")
+      transactionExists <- stateManager.transactionExists(updatedOrder.orderId, queries)
+      _                 <- logger.info(s"transactionExists: $transactionExists")
       _ <- performLongRunningOperation(transaction, transactionExists).value.flatMap(
              handleOperationOutcome(_, queries, updatedOrder, transaction)
            )
@@ -70,8 +68,7 @@ final class TransactionStream[F[_]](
     transactionExists: Boolean
   ): EitherT[F, Throwable, Unit] = {
     EitherT.liftF[F, Throwable, Unit](
-      logger.info("Performing long IO...") *>
-        F.sleep(operationTimer) *> // Simulate long-running operation
+      F.sleep(operationTimer) *> // Simulate long-running operation
         stateManager.getSwitch.flatMap {
           case false =>
             if (transaction.amount > 0 || transactionExists) {
@@ -97,18 +94,9 @@ final class TransactionStream[F[_]](
     transaction: TransactionRow
   ): F[Unit] = {
     operationOutcome match {
-      case Right(_) if updatedOrder.filled == updatedOrder.total =>
-        for {
-          _                 <- logger.info("Order filled")
-          transactionsState <- stateManager.getTransactions(updatedOrder.orderId)
-          transactions = transaction :: transactionsState
-          _ <- insertRecords(queries, updatedOrder, transactions)
-        } yield ()
+      case Right(_) if transaction.amount > 0 =>
+        insertRecords(queries, updatedOrder, transaction)
 
-      case Right(_) =>
-        logger.info("Order still in progress")
-        stateManager.updateOrderState(updatedOrder)
-        stateManager.addNewTransaction(transaction)
       case Left(th) =>
         logger.error(th)("Got error when performing long running operation!")
         MonadError[F, Throwable].raiseError[Unit](new RuntimeException("Long running operation failed", th))
@@ -118,16 +106,13 @@ final class TransactionStream[F[_]](
   private def insertRecords(
     queries: PreparedQueries[F],
     updatedOrder: OrderRow,
-    transactions: List[TransactionRow]
+    transaction: TransactionRow
   ): F[Unit] = {
     val params = updatedOrder.filled *: updatedOrder.orderId *: EmptyTuple
     for {
+//      _ <- if (updatedOrder.filled == updatedOrder.total)
       _ <- queries.updateOrder.execute(params)
-      _ <- logger.info(s"Updated order: $updatedOrder")
-      _ <- transactions.traverse_(transaction => {
-             queries.insertTransaction.execute(transaction)
-           })
-      // clean state
+      _ <- queries.insertTransaction.execute(transaction)
     } yield ()
   }
 
