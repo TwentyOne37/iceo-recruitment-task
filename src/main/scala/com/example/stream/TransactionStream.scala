@@ -55,7 +55,6 @@ final class TransactionStream[F[_]](
     val transaction = TransactionRow(state = orderState, updated = updatedOrder)
     for {
       transactionExists <- stateManager.transactionExists(updatedOrder.orderId, queries)
-      _                 <- logger.info(s"transactionExists: $transactionExists")
       _ <- performLongRunningOperation(transaction, transactionExists).value.flatMap(
              handleOperationOutcome(_, queries, updatedOrder, transaction)
            )

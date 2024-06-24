@@ -37,6 +37,13 @@ object Queries {
       }
   }
 
+  val checkTransactionExistence: Query[String, Boolean] = sql"""
+    SELECT EXISTS (
+      SELECT 1 FROM transactions
+      WHERE limit_order_id = $text
+    )
+  """.query(bool)
+
   val getAllTransactions: Query[Void, TransactionRow] = {
     sql"""
          SELECT * FROM transactions

@@ -31,23 +31,8 @@ final class StateManager[F[_]: Async](ioSwitch: SignallingRef[F, Boolean]) {
       case None    => Async[F].unit
     }
 
-//  def getTransactions(orderId: String): F[List[TransactionRow]] =
-//    transactions.get.map(_.values.toList.filter(_.orderId == orderId))
-//
-//  def addNewTransaction(transaction: TransactionRow): F[Unit] = {
-//    transactionExists(transaction.id).map {
-//      case false =>
-//        transactions.update(_ + (transaction.id -> transaction))
-//      case true => Async[F].unit
-//    }
-//  }
-
   def transactionExists(orderId: String, queries: PreparedQueries[F]): F[Boolean] =
-    queries.getTransaction.option(orderId).map {
-      case Some(t) =>
-        true
-      case None => false
-    }
+    queries.checkTransactionExistence.unique(orderId)
 
   def getSwitch: F[Boolean]              = ioSwitch.get
   def setSwitch(value: Boolean): F[Unit] = ioSwitch.set(value)
