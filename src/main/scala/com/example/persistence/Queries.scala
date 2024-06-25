@@ -37,12 +37,13 @@ object Queries {
       }
   }
 
+  // could be done better
   val checkTransactionExistence: Query[String *: BigDecimal *: EmptyTuple, Boolean] = sql"""
     SELECT EXISTS (
       SELECT 1 FROM transactions
       WHERE limit_order_id = $text AND amount = $numeric
     )
-""".query(bool)
+    """.query(bool)
 
   val getAllTransactions: Query[Void, TransactionRow] = {
     sql"""

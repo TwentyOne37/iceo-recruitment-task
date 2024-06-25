@@ -415,6 +415,48 @@ class TransactionStreamSpec extends FixtureAsyncWordSpec with BaseIOSpec with Op
           txn.map(_.amount).sum shouldBe 0.8
         }
       }
+
+      "T11: handle maxConcurrency with multiple simultaneous updates" in { fxt =>
+        val ts = Instant.now
+        val orders = (1 to 20)
+          .map(i =>
+            OrderRow(
+              orderId = s"example_id_$i",
+              market = "btc_eur",
+              total = 0.8,
+              filled = 0,
+              createdAt = ts,
+              updatedAt = ts
+            )
+          )
+          .toList
+
+        val updates = orders.map(order => order.copy(filled = 0.8))
+
+        val test = getResources(fxt, 100.millis, maxConcurrency = 8).use {
+          case Resources(stream, getO, getT, insertO, _) =>
+            for {
+              // Establish initial state with multiple orders
+              _           <- orders.traverse(order => stream.addNewOrder(order, insertO))
+              streamFiber <- stream.stream.compile.drain.start
+              // Simultaneously publish updates to test concurrency limits
+              _ <- updates.traverse(stream.publish)
+              _ <- IO.sleep(5.seconds) // Ensure there's sufficient time for processing under concurrency constraints
+              _ <- streamFiber.cancel
+              results <- getResults(stream, getO, getT)
+            } yield results
+        }
+        test.map { case Result(counter, orders, transactions) =>
+          // Ensure all orders are updated correctly
+          orders.foreach { updated =>
+            updated.filled shouldBe 0.8
+          }
+          transactions.size shouldBe updates.size
+          transactions.foreach { txn =>
+            txn.amount shouldBe 0.8
+          }
+        }
+      }
     }
   }
 
@@ -422,7 +464,8 @@ class TransactionStreamSpec extends FixtureAsyncWordSpec with BaseIOSpec with Op
   def getResources(
     fxt: FixtureParam,
     timer: FiniteDuration,
-    withTruncate: Boolean = true
+    withTruncate: Boolean = true,
+    maxConcurrency: Int = 3
   ): Resource[IO, Resources] = {
     for {
       _                 <- Resource.eval(IO.whenA(withTruncate)(truncateAllTables(fxt.databasePool)))
@@ -430,7 +473,7 @@ class TransactionStreamSpec extends FixtureAsyncWordSpec with BaseIOSpec with Op
       selectTransaction <- fxt.databasePool.sessionResource.evalMap(_.prepare(Queries.getAllTransactions))
       insertOrder       <- fxt.databasePool.sessionResource.evalMap(_.prepare(Queries.insertOrder))
       insertTransaction <- fxt.databasePool.sessionResource.evalMap(_.prepare(Queries.insertTransaction))
-      stream            <- TransactionStream.apply(timer, fxt.databasePool.sessionResource)
+      stream            <- TransactionStream.apply(timer, fxt.databasePool.sessionResource, maxConcurrency)
     } yield Resources(stream, selectOrder, selectTransaction, insertOrder, insertTransaction)
   }
 

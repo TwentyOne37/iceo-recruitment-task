@@ -42,13 +42,12 @@ final class TransactionStream[F[_]](
           maybeOrderState <- stateManager.getOrderState(updatedOrder.orderId, queries)
           _ <-
             maybeOrderState.fold(
-              // Order not found initially, log and wait to retry
+              // Order not found initially
               for {
                 _ <- logger.info(s"Order ${updatedOrder.orderId} not found. Retrying after 5 seconds...")
                 _ <- F.sleep(5.seconds) // Wait for 5 seconds before retrying
                 retriedOrderState <- stateManager.getOrderState(updatedOrder.orderId, queries)
                 _ <- retriedOrderState.fold(
-                       // Log error if order still not found after retry
                        logger.error(s"Order ${updatedOrder.orderId} still not found after retry.") *> F.unit
                      )(orderState =>
                        // Process the order if found after retry
@@ -111,7 +110,6 @@ final class TransactionStream[F[_]](
                 ) *> F.unit
             } else F.unit
           case true =>
-            // Raise an error if the switch is on (true), indicating a failure condition
             F.raiseError(new Exception("Long running IO failed!"))
         }
     )
@@ -142,7 +140,6 @@ final class TransactionStream[F[_]](
   ): F[Unit] = {
     val params = updatedOrder.filled *: updatedOrder.orderId *: EmptyTuple
     for {
-//      _ <- if (updatedOrder.filled == updatedOrder.total)
       _ <- queries.updateOrder.execute(params)
       _ <- queries.insertTransaction.execute(transaction)
     } yield ()
@@ -170,12 +167,12 @@ object TransactionStream {
 
   def apply[F[_]: Async: Logger](
     operationTimer: FiniteDuration,
-    session: Resource[F, Session[F]]
+    session: Resource[F, Session[F]],
+    maxConcurrency: Int
   ): Resource[F, TransactionStream[F]] = {
     for {
       counter      <- Resource.eval(Ref.of(0))
       stateManager <- Resource.eval(StateManager.apply[F])
-      maxConcurrency = 3
       queue <- Resource.make(Queue.unbounded[F, OrderRow]) { queue =>
                  // Function to drain the queue on resource release
                  val stream = new TransactionStream[F](
