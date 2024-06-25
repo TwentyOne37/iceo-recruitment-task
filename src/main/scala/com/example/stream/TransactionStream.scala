@@ -173,26 +173,21 @@ object TransactionStream {
     for {
       counter      <- Resource.eval(Ref.of(0))
       stateManager <- Resource.eval(StateManager.apply[F])
-      queue <- Resource.make(Queue.unbounded[F, OrderRow]) { queue =>
-                 // Function to drain the queue on resource release
-                 val stream = new TransactionStream[F](
-                   operationTimer,
-                   queue,
-                   session,
-                   counter,
-                   stateManager,
-                   maxConcurrency
-                 )
-                 stream.drainQueue(queue)
-               }
-
-    } yield new TransactionStream[F](
-      operationTimer,
-      queue,
-      session,
-      counter,
-      stateManager,
-      maxConcurrency
-    )
+      queue        <- Resource.eval(Queue.unbounded[F, OrderRow])
+      transactionStream <- Resource.make {
+                             Async[F].delay(
+                               new TransactionStream[F](
+                                 operationTimer,
+                                 queue,
+                                 session,
+                                 counter,
+                                 stateManager,
+                                 maxConcurrency
+                               )
+                             )
+                           } { stream =>
+                             stream.drainQueue(queue)
+                           }
+    } yield transactionStream
   }
 }
